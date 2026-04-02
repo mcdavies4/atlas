@@ -1,9 +1,14 @@
-const { processMessage } = require('./conversation');
+// ─────────────────────────────────────────────────────────────────────────────
+// UPDATED src/bot/webhook.js — replace your existing file with this
+// Adds rider AVAILABLE/OFFLINE command handling before sender flow
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Verify webhook with Meta
+const { processMessage } = require('./conversation');
+const { handleRiderCommand } = require('../riders/commands');
+
 function verifyWebhook(req, res) {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
+  const mode      = req.query['hub.mode'];
+  const token     = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
@@ -13,26 +18,22 @@ function verifyWebhook(req, res) {
   return res.sendStatus(403);
 }
 
-// Handle incoming WhatsApp messages
 async function handleWebhook(req, res) {
-  // Always respond 200 immediately so Meta doesn't retry
   res.sendStatus(200);
 
   try {
     const body = req.body;
     if (body.object !== 'whatsapp_business_account') return;
 
-    const entry = body.entry?.[0];
+    const entry   = body.entry?.[0];
     const changes = entry?.changes?.[0];
-    const value = changes?.value;
+    const value   = changes?.value;
 
-    // Ignore status updates (delivered, read receipts)
     if (!value?.messages) return;
 
     const message = value.messages[0];
-    const from = message.from; // sender's phone number
+    const from    = message.from;
 
-    // Only handle text messages for now
     if (message.type !== 'text') {
       const { sendMessage } = require('../utils/whatsapp');
       await sendMessage(from, "Hi! I can only read text messages for now. Please describe your delivery in text 🙏");
@@ -42,6 +43,11 @@ async function handleWebhook(req, res) {
     const text = message.text.body.trim();
     console.log(`📩 Message from ${from}: ${text}`);
 
+    // Check rider commands first (AVAILABLE / OFFLINE / STATUS)
+    const wasRiderCommand = await handleRiderCommand(from, text);
+    if (wasRiderCommand) return;
+
+    // Otherwise handle as sender flow
     await processMessage(from, text);
   } catch (err) {
     console.error('Webhook error:', err);
