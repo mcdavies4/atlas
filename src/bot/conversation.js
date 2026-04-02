@@ -1,4 +1,4 @@
-const { sendMessage } = require('../utils/whatsapp');
+const { sendMessage } = require('../utils/messenger');
 const { getSession, updateSession, clearSession } = require('../utils/session');
 const { extractDeliveryDetails } = require('../ai/claude');
 const { estimatePrice } = require('../pricing/engine');
@@ -14,36 +14,31 @@ const STATES = {
   DONE: 'DONE',
 };
 
-async function processMessage(phone, text) {
+async function processMessage(phone, text, channel = 'whatsapp') {
   const session = await getSession(phone);
   const state = session?.state || STATES.IDLE;
 
-  console.log(`[${phone}] State: ${state}`);
+  console.log(`[${phone}][${channel}] State: ${state}`);
 
   switch (state) {
     case STATES.IDLE:
-      return handleIdle(phone, text, session);
-
+      return handleIdle(phone, text, session, channel);
     case STATES.COLLECTING:
-      return handleCollecting(phone, text, session);
-
+      return handleCollecting(phone, text, session, channel);
     case STATES.CONFIRMING:
-      return handleConfirming(phone, text, session);
-
+      return handleConfirming(phone, text, session, channel);
     case STATES.SELECTING_RIDER:
-      return handleSelectingRider(phone, text, session);
-
+      return handleSelectingRider(phone, text, session, channel);
     default:
-      return handleIdle(phone, text, session);
+      return handleIdle(phone, text, session, channel);
   }
 }
 
-// ─── IDLE: Greet + start collecting ────────────────────────────────────────
+// ─── IDLE ───────────────────────────────────────────────────────────────────
 
-async function handleIdle(phone, text, session) {
+async function handleIdle(phone, text, session, channel) {
   const lower = text.toLowerCase();
 
-  // Restart / cancel keywords
   if (['hi', 'hello', 'start', 'hey', 'hiya'].some(k => lower.includes(k)) || !session) {
     await sendMessage(phone, `👋 Welcome to *Atlas* — your Abuja delivery assistant!
 
@@ -52,26 +47,24 @@ To get started, just tell me about your delivery. Include:
 📍 *Drop-off* location
 📦 What you're sending
 
-Example: _"Pick up a parcel from Wuse 2, deliver to Gwarinpa, it's a small package"_`);
+Example: _"Pick up a parcel from Wuse 2, deliver to Gwarinpa, it's a small package"_`, channel);
 
     await updateSession(phone, { state: STATES.COLLECTING, context: {} });
     return;
   }
 
-  // If they just jump straight in with details, process it
-  return handleCollecting(phone, text, { state: STATES.COLLECTING, context: {} });
+  return handleCollecting(phone, text, { state: STATES.COLLECTING, context: {} }, channel);
 }
 
-// ─── COLLECTING: Extract delivery details via Claude ────────────────────────
+// ─── COLLECTING ─────────────────────────────────────────────────────────────
 
-async function handleCollecting(phone, text, session) {
-  // Handle cancel
+async function handleCollecting(phone, text, session, channel) {
   if (text.toLowerCase() === 'cancel') {
     await clearSession(phone);
-    return sendMessage(phone, "No problem! Type *hi* whenever you need a delivery 👍");
+    return sendMessage(phone, "No problem! Type *hi* whenever you need a delivery 👍", channel);
   }
 
-  await sendMessage(phone, "Got it, let me work out the details... ⏳");
+  await sendMessage(phone, "Got it, let me work out the details... ⏳", channel);
 
   const context = session?.context || {};
   const details = await extractDeliveryDetails(text, context);
@@ -84,25 +77,20 @@ Please include:
 📍 Drop-off location
 📦 What you're sending
 
-Example: _"Pick up clothes from Maitama, deliver to Kubwa"_`);
+Example: _"Pick up clothes from Maitama, deliver to Kubwa"_`, channel);
     return;
   }
 
-  // Check if we have all required fields
   const missing = [];
   if (!details.pickup) missing.push('📍 *pickup location*');
   if (!details.dropoff) missing.push('📍 *drop-off location*');
   if (!details.itemDescription) missing.push('📦 *what you\'re sending*');
 
   if (missing.length > 0) {
-    await updateSession(phone, {
-      state: STATES.COLLECTING,
-      context: { ...context, ...details },
-    });
-    return sendMessage(phone, `Almost there! I still need:\n${missing.join('\n')}`);
+    await updateSession(phone, { state: STATES.COLLECTING, context: { ...context, ...details } });
+    return sendMessage(phone, `Almost there! I still need:\n${missing.join('\n')}`, channel);
   }
 
-  // We have everything — estimate price
   const pricing = await estimatePrice(details);
 
   const summary = `✅ *Here's your delivery summary:*
@@ -117,17 +105,13 @@ _(${pricing.zone} zone · ${pricing.distance} · cash on delivery)_
 
 Does this look right? Reply *YES* to see available riders, or *EDIT* to change details.`;
 
-  await updateSession(phone, {
-    state: STATES.CONFIRMING,
-    context: { ...details, pricing },
-  });
-
-  await sendMessage(phone, summary);
+  await updateSession(phone, { state: STATES.CONFIRMING, context: { ...details, pricing } });
+  await sendMessage(phone, summary, channel);
 }
 
-// ─── CONFIRMING: User confirms the summary ──────────────────────────────────
+// ─── CONFIRMING ─────────────────────────────────────────────────────────────
 
-async function handleConfirming(phone, text, session) {
+async function handleConfirming(phone, text, session, channel) {
   const lower = text.toLowerCase().trim();
 
   if (lower === 'yes' || lower === 'confirm' || lower === 'ok' || lower === 'okay') {
@@ -138,12 +122,11 @@ async function handleConfirming(phone, text, session) {
 
 We'll notify you when one becomes available. You can also try again in a few minutes.
 
-Type *hi* to restart.`);
+Type *hi* to restart.`, channel);
       await clearSession(phone);
       return;
     }
 
-    // Build rider selection menu
     let menu = `🏍️ *Available Riders Near You:*\n\n`;
     riders.forEach((r, i) => {
       menu += `*${i + 1}.* ${r.name} — ${r.company || 'Independent'}\n`;
@@ -151,57 +134,53 @@ Type *hi* to restart.`);
     });
     menu += `Reply with the *number* of the rider you want (e.g. *1*)`;
 
-    await updateSession(phone, {
-      state: STATES.SELECTING_RIDER,
-      context: { ...session.context, riders },
-    });
-
-    await sendMessage(phone, menu);
+    await updateSession(phone, { state: STATES.SELECTING_RIDER, context: { ...session.context, riders } });
+    await sendMessage(phone, menu, channel);
     return;
   }
 
   if (lower === 'edit' || lower === 'change') {
     await updateSession(phone, { state: STATES.COLLECTING, context: {} });
-    return sendMessage(phone, "No problem! Tell me your delivery details again 👇");
+    return sendMessage(phone, "No problem! Tell me your delivery details again 👇", channel);
   }
 
   if (lower === 'cancel') {
     await clearSession(phone);
-    return sendMessage(phone, "Delivery cancelled. Type *hi* to start a new one 👍");
+    return sendMessage(phone, "Delivery cancelled. Type *hi* to start a new one 👍", channel);
   }
 
-  await sendMessage(phone, "Please reply *YES* to confirm, *EDIT* to change details, or *CANCEL* to stop.");
+  await sendMessage(phone, "Please reply *YES* to confirm, *EDIT* to change details, or *CANCEL* to stop.", channel);
 }
 
-// ─── SELECTING RIDER: User picks a rider ────────────────────────────────────
+// ─── SELECTING RIDER ────────────────────────────────────────────────────────
 
-async function handleSelectingRider(phone, text, session) {
+async function handleSelectingRider(phone, text, session, channel) {
   const lower = text.toLowerCase().trim();
 
   if (lower === 'cancel') {
     await clearSession(phone);
-    return sendMessage(phone, "Delivery cancelled. Type *hi* to start a new one 👍");
+    return sendMessage(phone, "Delivery cancelled. Type *hi* to start a new one 👍", channel);
   }
 
   const choice = parseInt(text.trim(), 10);
   const riders = session.context?.riders || [];
 
   if (isNaN(choice) || choice < 1 || choice > riders.length) {
-    return sendMessage(phone, `Please reply with a number between 1 and ${riders.length}, or *CANCEL* to stop.`);
+    return sendMessage(phone, `Please reply with a number between 1 and ${riders.length}, or *CANCEL* to stop.`, channel);
   }
 
   const selectedRider = riders[choice - 1];
   const context = session.context;
 
-  // Create job in DB
   const job = await createJob({
-    senderPhone: phone,
-    pickup: context.pickup,
-    dropoff: context.dropoff,
+    senderPhone:     phone,
+    pickup:          context.pickup,
+    dropoff:         context.dropoff,
     itemDescription: context.itemDescription,
-    itemSize: context.itemSize,
-    estimatedPrice: context.pricing?.estimate,
-    riderId: selectedRider.id,
+    itemSize:        context.itemSize,
+    estimatedPrice:  context.pricing?.estimate,
+    riderId:         selectedRider.id,
+    channel,
   });
 
   await clearSession(phone);
@@ -210,7 +189,7 @@ async function handleSelectingRider(phone, text, session) {
 
 📋 *Job ID:* ${job.id.slice(0, 8).toUpperCase()}
 🏍️ *Rider:* ${selectedRider.name}
-📞 *Contact rider directly:* wa.me/${selectedRider.phone}
+📞 *Contact rider on WhatsApp:* wa.me/${selectedRider.phone}
 
 *What happens next:*
 1. Contact your rider on WhatsApp to confirm pickup time
@@ -218,7 +197,7 @@ async function handleSelectingRider(phone, text, session) {
 3. Get your item delivered!
 
 Thank you for using *Atlas* 🚀
-Type *hi* to book another delivery.`);
+Type *hi* to book another delivery.`, channel);
 }
 
 module.exports = { processMessage };

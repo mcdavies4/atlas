@@ -1,10 +1,6 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// UPDATED src/bot/webhook.js — replace your existing file with this
-// Adds rider AVAILABLE/OFFLINE command handling before sender flow
-// ─────────────────────────────────────────────────────────────────────────────
-
-const { processMessage } = require('./conversation');
+const { processMessage }     = require('./conversation');
 const { handleRiderCommand } = require('../riders/commands');
+const { sendMessage }        = require('../utils/messenger');
 
 function verifyWebhook(req, res) {
   const mode      = req.query['hub.mode'];
@@ -35,20 +31,17 @@ async function handleWebhook(req, res) {
     const from    = message.from;
 
     if (message.type !== 'text') {
-      const { sendMessage } = require('../utils/whatsapp');
-      await sendMessage(from, "Hi! I can only read text messages for now. Please describe your delivery in text 🙏");
+      await sendMessage(from, "Hi! I can only read text messages for now. Please describe your delivery in text 🙏", 'whatsapp');
       return;
     }
 
     const text = message.text.body.trim();
-    console.log(`📩 Message from ${from}: ${text}`);
+    console.log(`📩 [WhatsApp] from ${from}: ${text}`);
 
-    // Check rider commands first (AVAILABLE / OFFLINE / STATUS)
-    const wasRiderCommand = await handleRiderCommand(from, text);
+    const wasRiderCommand = await handleRiderCommand(from, text, 'whatsapp');
     if (wasRiderCommand) return;
 
-    // Otherwise handle as sender flow
-    await processMessage(from, text);
+    await processMessage(from, text, 'whatsapp');
   } catch (err) {
     console.error('Webhook error:', err);
   }
